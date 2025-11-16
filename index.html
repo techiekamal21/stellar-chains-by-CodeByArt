@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stellar Chains - Addictive HTML5 Puzzle Game</title>
+    <meta name="description" content="Play Stellar Chains, an addictive HTML5 puzzle game where you link colorful stars to forge constellations. Master the grid, create massive combos, and race against the clock in this vibrant, free online cosmic adventure." />
+    <meta name="keywords" content="stellar chains, html5 game, puzzle game, match 3 game, star game, free online game, addictive game, constellation game, web game, wordpress game, codebyart" />
+    <meta name="author" content="codebyart">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Scoped styles to prevent conflict with a parent website (e.g., WordPress) */
+      #stellar-chains-app-container {
+        background-color: #0c0a18;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        width: 100%;
+        height: 100%;
+      }
+      @keyframes stellarChains-fade-in {
+        from { opacity: 0; transform: scale(0.9); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      .animate-fade-in {
+        animation: stellarChains-fade-in 0.3s ease-out forwards;
+      }
+    </style>
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://aistudiocdn.com/react@^19.2.0",
+        "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client"
+      }
+    }
+    </script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="stellar-chains-app-container"></div>
+    <script type="module">
+        import React, { useState, useCallback, useRef, useEffect } from 'react';
+        import ReactDOM from 'react-dom/client';
+
+        // --- All Game Code is Contained in this Script ---
+
+        // PREFIX: stellarChains_
+
+        // --- TYPES & CONSTANTS ---
+        const stellarChains_GameState = {
+            StartScreen: 'StartScreen',
+            Playing: 'Playing',
+            LevelComplete: 'LevelComplete',
+            GameOver: 'GameOver',
+        };
+
+        const stellarChains_GRID_SIZE = 8;
+        const stellarChains_CELL_SIZE = 12.5; // Percentage
+        const stellarChains_ALL_STAR_COLORS = ['#ff6b6b', '#f9d423', '#54a0ff', '#5f27cd', '#10ac84', '#ff9ff3'];
+        const stellarChains_MIN_CHAIN_LENGTH = 3;
+        
+        const stellarChains_LEVEL_CONFIG = [
+            { level: 1, goal: 1000, time: 60, colors: 4 },
+            { level: 2, goal: 2500, time: 65, colors: 4 },
+            { level: 3, goal: 4500, time: 70, colors: 5 },
+            { level: 4, goal: 7000, time: 75, colors: 5 },
+            { level: 5, goal: 10000, time: 80, colors: 6 },
+            // Add more levels here
+        ];
+
+        // --- SOUND MANAGER ---
+        const stellarChains_SoundManager = {
+            audioContext: null,
+            isMuted: false,
+            mainGainNode: null,
+
+            init() {
+                if (this.audioContext) return;
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    this.mainGainNode = this.audioContext.createGain();
+                    this.mainGainNode.connect(this.audioContext.destination);
+                    this.mainGainNode.gain.value = this.isMuted ? 0 : 1;
+                } catch(e) {
+                    console.error("Web Audio API is not supported in this browser");
+                }
+            },
+
+            toggleMute() {
+                if (!this.audioContext) {
+                    this.isMuted = !this.isMuted; // Toggle state even if context is not yet created
+                    return;
+                };
+                this.isMuted = !this.isMuted;
+                this.mainGainNode.gain.setValueAtTime(this.isMuted ? 0 : 1, this.audioContext.currentTime);
+            },
+
+            playSound({ type = 'sine', frequency = 440, duration = 0.1, volume = 0.5, attack = 0.01, decay = 0.1 }) {
+                if (!this.audioContext || this.isMuted) return;
+
+                const oscillator = this.audioContext.createOscillator();
+                const gainNode = this.audioContext.createGain();
+                gainNode.connect(this.mainGainNode);
+                oscillator.connect(gainNode);
+
+                oscillator.type = type;
+                oscillator.frequency.setValueAtTime(frequency, this.audioContext.currentTime);
+                
+                gainNode.gain.setValueAtTime(0, this.audioContext.currentTime);
+                gainNode.gain.linearRampToValueAtTime(volume, this.audioContext.currentTime + attack);
+                gainNode.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + duration);
+
+                oscillator.start(this.audioContext.currentTime);
+                oscillator.stop(this.audioContext.currentTime + duration);
+            },
+
+            playConnect(index) { this.playSound({ type: 'sine', frequency: 300 + index * 30, duration: 0.1, volume: 0.3 }); },
+            playComplete() { this.playSound({ type: 'triangle', frequency: 600, duration: 0.2, volume: 0.5 }); setTimeout(() => this.playSound({ type: 'triangle', frequency: 800, duration: 0.2, volume: 0.5 }), 80); },
+            playLoopComplete() { this.playSound({ type: 'sawtooth', frequency: 200, duration: 0.4, volume: 0.6 }); setTimeout(() => this.playSound({ type: 'sawtooth', frequency: 400, duration: 0.3, volume: 0.6 }), 100); },
+            playLevelUp() { [440, 554.37, 659.25, 880].forEach((freq, i) => setTimeout(() => this.playSound({ type: 'square', frequency: freq, duration: 0.15, volume: 0.4 }), i * 100)); },
+            playGameOver() { [440, 349.23, 261.63].forEach((freq, i) => setTimeout(() => this.playSound({ type: 'sawtooth', frequency: freq, duration: 0.2, volume: 0.5 }), i * 120)); },
+            playClick() { this.playSound({ type: 'sine', frequency: 800, duration: 0.08, volume: 0.4 }); }
+        };
+
+        // --- COMPONENTS ---
+
+        const StellarChains_Modal = ({ children }) => {
+            return (
+                React.createElement('div', { className: "absolute inset-0 bg-black/70 flex items-center justify-center p-8 z-20 backdrop-blur-sm" },
+                    React.createElement('div', { className: "bg-gray-800/80 border border-purple-500/30 rounded-2xl shadow-2xl shadow-purple-500/20 p-8 text-center max-w-sm w-full animate-fade-in" },
+                        children
+                    )
+                )
+            );
+        };
+        
+        const StellarChains_MuteButton = ({ isMuted, onClick }) => {
+            return React.createElement('button', {
+                onClick: onClick,
+                className: "flex items-center gap-2 px-4 py-2 rounded-full bg-black/30 hover:bg-black/50 text-white/70 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500 z-30",
+                'aria-label': isMuted ? 'Unmute' : 'Mute'
+            },
+            React.createElement('svg', { xmlns: "http://www.w3.org/2000/svg", fill: "none", viewBox: "0 0 24 24", strokeWidth: 1.5, stroke: "currentColor", className: "w-5 h-5" },
+              React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", d: "M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" }),
+              isMuted && React.createElement('path', { strokeLinecap: "round", strokeLinejoin: "round", d: "M2.25 2.25l19.5 19.5", className: "text-red-500" , stroke: 'currentColor', strokeWidth: 2 })
+            ),
+            React.createElement('span', { className: "font-semibold text-sm" }, isMuted ? 'Sound Off' : 'Sound On')
+            );
+        };
+
+        const StellarChains_GameCanvas = ({ gameState, score, setScore, setTimeLeft, onGameOver, onLevelComplete, levelConfig, onStarConnect, onChainComplete, onLoopComplete }) => {
+            const canvasRef = useRef(null);
+            const animationFrameId = useRef(0);
+            const lastTimeRef = useRef(0);
+
+            const gridRef = useRef([]);
+            const activeChainRef = useRef([]);
+            const particlesRef = useRef([]);
+            const isDraggingRef = useRef(false);
+            const scoreRef = useRef(score);
+            const timeLeftRef = useRef(levelConfig.time);
+
+            const [canvasSize, setCanvasSize] = useState({ width: 500, height: 500 });
+            
+            useEffect(() => {
+                scoreRef.current = score;
+            }, [score]);
+
+            const getCellSize = useCallback(() => canvasSize.width / stellarChains_GRID_SIZE, [canvasSize.width]);
+
+            const stellarChains_createStar = useCallback((row, col) => {
+                const cellSize = getCellSize();
+                const availableColors = stellarChains_ALL_STAR_COLORS.slice(0, levelConfig.colors);
+                return {
+                    id: Date.now() + Math.random(),
+                    x: col * cellSize + cellSize / 2,
+                    y: -cellSize / 2,
+                    targetY: row * cellSize + cellSize / 2,
+                    color: availableColors[Math.floor(Math.random() * availableColors.length)],
+                    radius: cellSize * 0.35,
+                    isVanishing: false,
+                    vanishProgress: 0,
+                };
+            }, [getCellSize, levelConfig.colors]);
+
+            const stellarChains_initializeGrid = useCallback(() => {
+                const newGrid = Array(stellarChains_GRID_SIZE).fill(null).map(() => Array(stellarChains_GRID_SIZE).fill(null));
+                for (let row = 0; row < stellarChains_GRID_SIZE; row++) {
+                    for (let col = 0; col < stellarChains_GRID_SIZE; col++) {
+                        newGrid[row][col] = stellarChains_createStar(row, col);
+                    }
+                }
+                gridRef.current = newGrid;
+            }, [stellarChains_createStar]);
+            
+            const stellarChains_draw = useCallback((ctx) => {
+                ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                
+                const gradient = ctx.createRadialGradient(ctx.canvas.width/2, ctx.canvas.height/2, 0, ctx.canvas.width/2, ctx.canvas.height/2, ctx.canvas.width);
+                gradient.addColorStop(0, '#1e1b34');
+                gradient.addColorStop(1, '#0c0a18');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+                if (activeChainRef.current.length > 0) {
+                    ctx.beginPath();
+                    ctx.moveTo(activeChainRef.current[0].x, activeChainRef.current[0].y);
+                    activeChainRef.current.forEach(star => ctx.lineTo(star.x, star.y));
+                    ctx.strokeStyle = activeChainRef.current[0].color;
+                    ctx.lineWidth = 4;
+                    ctx.globalAlpha = 0.7;
+                    ctx.stroke();
+                    ctx.globalAlpha = 1.0;
+                }
+
+                gridRef.current.forEach(row => row.forEach(star => {
+                    if (star) {
+                        ctx.save();
+                        if(star.isVanishing) {
+                            ctx.globalAlpha = 1 - star.vanishProgress;
+                            const scale = 1 - star.vanishProgress;
+                            ctx.translate(star.x, star.y);
+                            ctx.scale(scale, scale);
+                            ctx.translate(-star.x, -star.y);
+                        }
+                        ctx.beginPath();
+                        ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+                        ctx.fillStyle = star.color;
+                        ctx.shadowColor = star.color;
+                        ctx.shadowBlur = 15;
+                        ctx.fill();
+                        ctx.restore();
+                    }
+                }));
+
+                particlesRef.current.forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.globalAlpha = p.alpha;
+                    ctx.fillStyle = p.color;
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1.0;
+
+            }, []);
+
+            const stellarChains_update = useCallback((deltaTime) => {
+                if (gameState !== stellarChains_GameState.Playing) return;
+
+                timeLeftRef.current -= deltaTime;
+                if (timeLeftRef.current <= 0) {
+                    timeLeftRef.current = 0;
+                    setTimeLeft(0);
+                    onGameOver(scoreRef.current);
+                    return;
+                }
+                setTimeLeft(timeLeftRef.current);
+                
+                if (scoreRef.current >= levelConfig.goal) {
+                    onLevelComplete();
+                    return;
+                }
+
+                let needsRefill = false;
+                gridRef.current.flat().forEach(star => {
+                    if(star) {
+                        if(star.y < star.targetY) {
+                            star.y += (star.targetY - star.y) * 0.15;
+                            if(star.targetY - star.y < 0.1) star.y = star.targetY;
+                        }
+                        if(star.isVanishing) {
+                            star.vanishProgress += 0.1;
+                            if(star.vanishProgress >= 1) needsRefill = true;
+                        }
+                    }
+                });
+                
+                if (needsRefill) {
+                    for (let row = 0; row < stellarChains_GRID_SIZE; row++) {
+                        for (let col = 0; col < stellarChains_GRID_SIZE; col++) {
+                            if (gridRef.current[row][col]?.isVanishing && gridRef.current[row][col].vanishProgress >= 1) {
+                                gridRef.current[row][col] = null;
+                            }
+                        }
+                    }
+
+                    const cellSize = getCellSize();
+                    for (let col = 0; col < stellarChains_GRID_SIZE; col++) {
+                        let emptyRow = stellarChains_GRID_SIZE - 1;
+                        for (let row = stellarChains_GRID_SIZE - 1; row >= 0; row--) {
+                            if (gridRef.current[row][col] !== null) {
+                                if (emptyRow !== row) {
+                                    gridRef.current[emptyRow][col] = gridRef.current[row][col];
+                                    gridRef.current[emptyRow][col].targetY = emptyRow * cellSize + cellSize / 2;
+                                    gridRef.current[row][col] = null;
+                                }
+                                emptyRow--;
+                            }
+                        }
+                    }
+                    
+                    for (let row = 0; row < stellarChains_GRID_SIZE; row++) {
+                        for (let col = 0; col < stellarChains_GRID_SIZE; col++) {
+                            if (gridRef.current[row][col] === null) {
+                                gridRef.current[row][col] = stellarChains_createStar(row, col);
+                            }
+                        }
+                    }
+                }
+
+                particlesRef.current = particlesRef.current.filter(p => p.alpha > 0);
+                particlesRef.current.forEach(p => {
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.alpha -= 0.02;
+                });
+            }, [gameState, onGameOver, onLevelComplete, levelConfig.goal, stellarChains_createStar, getCellSize, setTimeLeft]);
+
+            const stellarChains_gameLoop = useCallback((time) => {
+                if (!lastTimeRef.current) lastTimeRef.current = time;
+                const deltaTime = (time - lastTimeRef.current) / 1000;
+                lastTimeRef.current = time;
+                
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    if (ctx) {
+                        stellarChains_update(deltaTime);
+                        stellarChains_draw(ctx);
+                    }
+                }
+                animationFrameId.current = requestAnimationFrame(stellarChains_gameLoop);
+            }, [stellarChains_draw, stellarChains_update]);
+            
+            useEffect(() => {
+                const handleResize = () => {
+                    const canvas = canvasRef.current;
+                    if (canvas && canvas.parentElement) {
+                        const size = Math.min(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight);
+                        setCanvasSize({ width: size, height: size });
+                    }
+                };
+                handleResize();
+                window.addEventListener('resize', handleResize);
+                return () => window.removeEventListener('resize', handleResize);
+            }, []);
+              
+            useEffect(() => {
+                if (canvasRef.current) {
+                    canvasRef.current.width = canvasSize.width;
+                    canvasRef.current.height = canvasSize.height;
+                    stellarChains_initializeGrid();
+                }
+            }, [canvasSize, stellarChains_initializeGrid]);
+
+            useEffect(() => {
+                if (gameState === stellarChains_GameState.Playing) {
+                    timeLeftRef.current = levelConfig.time;
+                    setTimeLeft(levelConfig.time);
+                    lastTimeRef.current = 0;
+                    stellarChains_initializeGrid();
+                }
+                
+                if (gameState !== stellarChains_GameState.StartScreen) {
+                    animationFrameId.current = requestAnimationFrame(stellarChains_gameLoop);
+                } else {
+                     if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+                }
+
+                return () => {
+                    if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+                };
+            }, [gameState, levelConfig, stellarChains_gameLoop, stellarChains_initializeGrid, setTimeLeft]);
+              
+            const stellarChains_createParticles = (x, y, color) => {
+                for(let i=0; i<20; i++) {
+                    particlesRef.current.push({
+                        x, y,
+                        vx: (Math.random() - 0.5) * 5,
+                        vy: (Math.random() - 0.5) * 5,
+                        radius: Math.random() * 3 + 1,
+                        color,
+                        alpha: 1
+                    });
+                }
+            };
+
+            const getStarFromCoords = (x, y) => {
+                const cellSize = getCellSize();
+                const col = Math.floor(x / cellSize);
+                const row = Math.floor(y / cellSize);
+                if (gridRef.current[row] && gridRef.current[row][col]) {
+                    return gridRef.current[row][col];
+                }
+                return null;
+            };
+              
+            const handleInteractionStart = (x, y) => {
+                if (gameState !== stellarChains_GameState.Playing) return;
+                const star = getStarFromCoords(x, y);
+                if (star) {
+                    isDraggingRef.current = true;
+                    activeChainRef.current = [star];
+                    onStarConnect(1);
+                }
+            };
+
+            const handleInteractionMove = (x, y) => {
+                if (!isDraggingRef.current || activeChainRef.current.length === 0) return;
+                const star = getStarFromCoords(x, y);
+                if (star) {
+                    const lastStar = activeChainRef.current.at(-1);
+                    if (star !== lastStar && star.color === lastStar.color) {
+                        const cellSize = getCellSize();
+                        const dx = Math.abs(star.x - lastStar.x);
+                        const dy = Math.abs(star.y - lastStar.y);
+                        if (dx < cellSize * 1.5 && dy < cellSize * 1.5) {
+                           const existingIndex = activeChainRef.current.indexOf(star);
+                           if (existingIndex === -1) {
+                                activeChainRef.current.push(star);
+                                onStarConnect(activeChainRef.current.length);
+                           } else if (existingIndex === activeChainRef.current.length - 2) {
+                                activeChainRef.current.pop();
+                           }
+                        }
+                    }
+                }
+            };
+
+            const handleInteractionEnd = () => {
+                if (!isDraggingRef.current) return;
+                isDraggingRef.current = false;
+                const chain = activeChainRef.current;
+                
+                const isLoop = chain.length > 2 && chain[0].id === chain.at(-1).id;
+
+                if (chain.length >= stellarChains_MIN_CHAIN_LENGTH) {
+                    let points = chain.length * 10 * (1 + (chain.length - stellarChains_MIN_CHAIN_LENGTH) * 0.25);
+                    
+                    if(isLoop) {
+                        onLoopComplete();
+                        points *= 2;
+                        const loopColor = chain[0].color;
+                        gridRef.current.flat().forEach(star => {
+                            if(star && star.color === loopColor) {
+                                star.isVanishing = true;
+                                stellarChains_createParticles(star.x, star.y, star.color);
+                            }
+                        });
+                    } else {
+                        onChainComplete();
+                        chain.forEach(star => {
+                            if (star) {
+                                star.isVanishing = true;
+                                stellarChains_createParticles(star.x, star.y, star.color);
+                            }
+                        });
+                    }
+
+                    scoreRef.current += Math.round(points);
+                    setScore(scoreRef.current);
+                }
+                activeChainRef.current = [];
+            };
+
+            const getCoordsFromEvent = (e) => {
+                const canvas = canvasRef.current;
+                if (!canvas) return {x: 0, y: 0};
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : null;
+                return { 
+                    x: (touch ? touch.clientX : e.clientX) - rect.left, 
+                    y: (touch ? touch.clientY : e.clientY) - rect.top 
+                };
+            }
+
+            return React.createElement('canvas', { 
+                ref: canvasRef, 
+                onMouseDown: (e) => handleInteractionStart(getCoordsFromEvent(e).x, getCoordsFromEvent(e).y),
+                onMouseMove: (e) => handleInteractionMove(getCoordsFromEvent(e).x, getCoordsFromEvent(e).y),
+                onMouseUp: handleInteractionEnd,
+                onMouseLeave: handleInteractionEnd,
+                onTouchStart: (e) => { e.preventDefault(); handleInteractionStart(getCoordsFromEvent(e).x, getCoordsFromEvent(e).y); },
+                onTouchMove: (e) => { e.preventDefault(); handleInteractionMove(getCoordsFromEvent(e).x, getCoordsFromEvent(e).y); },
+                onTouchEnd: (e) => { e.preventDefault(); handleInteractionEnd(); },
+                className: "cursor-pointer"
+            });
+        };
+
+        const StellarChains_App = () => {
+            const [gameState, setGameState] = useState(stellarChains_GameState.StartScreen);
+            const [score, setScore] = useState(0);
+            const [scoreAtLevelStart, setScoreAtLevelStart] = useState(0);
+            const [timeLeft, setTimeLeft] = useState(0);
+            const [level, setLevel] = useState(1);
+            const [finalScore, setFinalScore] = useState(0);
+            const [playerName, setPlayerName] = useState('Player');
+            const [highScore, setHighScore] = useState(0);
+            const [isNewHighScore, setIsNewHighScore] = useState(false);
+            const [isMuted, setIsMuted] = useState(false);
+            const playerNameRef = useRef(null);
+
+            useEffect(() => {
+                const savedHighScore = localStorage.getItem('stellarChains_highScore') || '0';
+                setHighScore(parseInt(savedHighScore, 10));
+            }, []);
+
+            const currentLevelConfig = stellarChains_LEVEL_CONFIG[level - 1] || stellarChains_LEVEL_CONFIG.at(-1);
+
+            const stellarChains_handleGameStart = useCallback(() => {
+                stellarChains_SoundManager.init();
+                stellarChains_SoundManager.playClick();
+                const name = playerNameRef.current?.value.trim();
+                if (name) {
+                    setPlayerName(name);
+                } else {
+                    setPlayerName('Player');
+                }
+                setScore(0);
+                setScoreAtLevelStart(0);
+                setLevel(1);
+                setIsNewHighScore(false);
+                setGameState(stellarChains_GameState.Playing);
+            }, []);
+
+            const stellarChains_handleGameOver = useCallback((currentScore) => {
+                stellarChains_SoundManager.playGameOver();
+                setFinalScore(currentScore);
+                if (currentScore > highScore) {
+                    setHighScore(currentScore);
+                    localStorage.setItem('stellarChains_highScore', currentScore.toString());
+                    setIsNewHighScore(true);
+                } else {
+                    setIsNewHighScore(false);
+                }
+                setGameState(stellarChains_GameState.GameOver);
+            }, [highScore]);
+            
+            const stellarChains_handleLevelComplete = useCallback(() => {
+                stellarChains_SoundManager.playLevelUp();
+                setGameState(stellarChains_GameState.LevelComplete);
+            }, []);
+
+            const stellarChains_handleNextLevel = useCallback(() => {
+                stellarChains_SoundManager.playClick();
+                if (stellarChains_LEVEL_CONFIG[level]) {
+                    setScoreAtLevelStart(score);
+                    setLevel(prev => prev + 1);
+                    setGameState(stellarChains_GameState.Playing);
+                } else {
+                    stellarChains_handleGameOver(score);
+                }
+            }, [level, score, stellarChains_handleGameOver]);
+            
+            const stellarChains_handleTryAgain = useCallback(() => {
+                stellarChains_SoundManager.playClick();
+                setScore(scoreAtLevelStart);
+                setIsNewHighScore(false);
+                setGameState(stellarChains_GameState.Playing);
+            }, [scoreAtLevelStart]);
+
+            const stellarChains_handleBackToMenu = useCallback(() => {
+                stellarChains_SoundManager.playClick();
+                setGameState(stellarChains_GameState.StartScreen);
+            }, []);
+
+            const stellarChains_handleToggleMute = () => {
+                stellarChains_SoundManager.toggleMute();
+                setIsMuted(stellarChains_SoundManager.isMuted);
+            };
+
+            return React.createElement('div', { className: "min-h-full h-full text-white flex flex-col items-center justify-center p-4 selection:bg-purple-500 selection:text-white" },
+                React.createElement('div', { className: "w-full max-w-md mx-auto" },
+                    React.createElement('header', { className: "mb-2 text-center" },
+                        React.createElement('h1', { className: "text-4xl md:text-5xl font-bold tracking-wider bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-500" }, "Stellar Chains"),
+                        React.createElement('p', { className: "text-gray-400 mt-1" }, "Connect the stars to score points!")
+                    ),
+
+                    React.createElement('div', { className: 'flex justify-center mb-2' },
+                        React.createElement(StellarChains_MuteButton, { isMuted, onClick: stellarChains_handleToggleMute })
+                    ),
+
+                    gameState === stellarChains_GameState.Playing && React.createElement('div', { className: "w-full flex justify-between items-center mb-3 px-4 py-2 bg-black/40 rounded-lg border border-purple-500/30 text-white/90" },
+                        React.createElement('div', { className: "text-lg font-bold" },
+                            React.createElement('span', { className: "text-gray-400" }, "Level: "),
+                            React.createElement('span', null, `${currentLevelConfig.level}`)
+                        ),
+                        React.createElement('div', { className: "text-lg font-bold text-center" },
+                             React.createElement('span', { className: "text-gray-400" }, "Score: "),
+                             React.createElement('span', null, `${score} / ${currentLevelConfig.goal}`)
+                        ),
+                        React.createElement('div', { className: "text-lg font-bold" },
+                            React.createElement('span', { className: "text-gray-400" }, "Time: "),
+                            React.createElement('span', null, `${Math.ceil(timeLeft)}s`)
+                        )
+                    ),
+                    
+                    React.createElement('div', { className: "relative w-full aspect-square bg-black/50 rounded-2xl shadow-2xl shadow-purple-500/20 overflow-hidden border-2 border-purple-900/50" },
+                        React.createElement(StellarChains_GameCanvas, { 
+                            gameState,
+                            score, 
+                            setScore, 
+                            setTimeLeft, 
+                            onGameOver: stellarChains_handleGameOver, 
+                            onLevelComplete: stellarChains_handleLevelComplete, 
+                            levelConfig: currentLevelConfig,
+                            onStarConnect: stellarChains_SoundManager.playConnect.bind(stellarChains_SoundManager),
+                            onChainComplete: stellarChains_SoundManager.playComplete.bind(stellarChains_SoundManager),
+                            onLoopComplete: stellarChains_SoundManager.playLoopComplete.bind(stellarChains_SoundManager)
+                        }),
+                        
+                        gameState === stellarChains_GameState.StartScreen && React.createElement(StellarChains_Modal, null,
+                            React.createElement('h2', { className: "text-3xl font-bold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-teal-300 to-blue-400" }, "Welcome!"),
+                            React.createElement('p', { className: "mb-2 text-gray-300" }, `Connect 3+ stars of the same color. Can you beat all ${stellarChains_LEVEL_CONFIG.length} levels?`),
+                            React.createElement('p', { className: "mb-4 text-lg text-amber-300 font-semibold" }, `High Score: ${highScore}`),
+                             React.createElement('input', {
+                                ref: playerNameRef,
+                                type: 'text',
+                                placeholder: 'Enter your name',
+                                maxLength: 12,
+                                className: "w-full bg-gray-900/70 border border-purple-500/50 rounded-lg px-4 py-2 mb-4 text-white text-center focus:outline-none focus:ring-2 focus:ring-purple-500 transition"
+                            }),
+                            React.createElement('button', { onClick: stellarChains_handleGameStart, className: "w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg shadow-purple-500/30" }, "Start Game")
+                        ),
+                        
+                        gameState === stellarChains_GameState.LevelComplete && React.createElement(StellarChains_Modal, null,
+                            React.createElement('h2', { className: "text-3xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-green-300 to-emerald-500" }, `Well done, ${playerName}!`),
+                            React.createElement('p', { className: "mb-1 text-gray-400" }, `Level ${level} Complete!`),
+                            React.createElement('p', { className: "mb-4 text-gray-300 text-xl" }, `Score: `, React.createElement('span', { className: "font-bold text-white" }, score)),
+                            React.createElement('button', { onClick: stellarChains_handleNextLevel, className: "w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg shadow-blue-500/30" }, "Next Level")
+                        ),
+                        
+                        gameState === stellarChains_GameState.GameOver && React.createElement(StellarChains_Modal, null,
+                            React.createElement('h2', { className: "text-3xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-orange-400 to-red-500" }, `Game Over, ${playerName}`),
+                            isNewHighScore && React.createElement('p', { className: 'text-xl font-bold text-amber-300 animate-pulse' }, 'New High Score!'),
+                            React.createElement('p', { className: "mb-4 text-gray-300 text-xl" }, "Final Score: ", React.createElement('span', { className: "font-bold text-white" }, finalScore)),
+                            React.createElement('div', { className: "flex flex-col sm:flex-row gap-2 mt-6" },
+                                React.createElement('button', { onClick: stellarChains_handleTryAgain, className: "w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg shadow-blue-500/30" }, "Try Again"),
+                                React.createElement('button', { onClick: stellarChains_handleBackToMenu, className: "w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg shadow-gray-500/30" }, "Start Over")
+                            )
+                        )
+                    ),
+
+                    React.createElement('footer', { className: "text-center text-gray-500 text-sm mt-4" },
+                        React.createElement('p', null, `© ${new Date().getFullYear()} codebyart. All rights reserved.`)
+                    )
+                )
+            );
+        };
+
+        // --- RENDER THE APP ---
+        const stellarChains_init = () => {
+            const rootElement = document.getElementById('stellar-chains-app-container');
+            if (!rootElement) {
+                console.error("Could not find root element to mount to");
+                return;
+            }
+            const root = ReactDOM.createRoot(rootElement);
+            root.render(React.createElement(React.StrictMode, null, React.createElement(StellarChains_App)));
+        };
+
+        stellarChains_init();
+
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
