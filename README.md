@@ -17,4 +17,4 @@ npm run dev
 
 Created by **[codebyart](https://www.codebyart.com)**
 
-© 2024 codebyart. All rights reserved.
+© 2025 codebyart. All rights reserved.
